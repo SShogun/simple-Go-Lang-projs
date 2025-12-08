@@ -2,9 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -26,10 +29,62 @@ type CacheEntry struct {
 // Global in-memory cache variable. Initialized to nil.
 var rateCache *CacheEntry = nil
 
+// Cache file path for persistent storage
+const cacheFilePath = "currency_cache.json"
+
 // Define the maximum duration before the cache is considered expired.
-const cacheExpiry = 30 * time.Minute
+// This can be overridden via command-line flag.
+var cacheExpiry = 30 * time.Minute
+
+// List of common currency codes for validation
+var validCurrencies = []string{
+	"USD", "EUR", "GBP", "JPY", "AUD", "CAD", "CHF", "CNY", "INR", "MXN",
+	"BRL", "ZAR", "RUB", "KRW", "SGD", "HKD", "NOK", "SEK", "DKK", "NZD",
+	"TRY", "PLN", "THB", "MYR", "IDR", "PHP", "CZK", "HUF", "ILS", "AED",
+}
+
+// loadCacheFromDisk reads the cache file and populates the global cache variable.
+func loadCacheFromDisk() error {
+	data, err := os.ReadFile(cacheFilePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // File doesn't exist yet, not an error
+		}
+		return fmt.Errorf("error reading cache file: %w", err)
+	}
+
+	var entry CacheEntry
+	err = json.Unmarshal(data, &entry)
+	if err != nil {
+		return fmt.Errorf("error parsing cache file: %w", err)
+	}
+
+	rateCache = &entry
+	fmt.Println("📁 Loaded cache from disk")
+	return nil
+}
+
+// saveCacheToDisk writes the current cache to a JSON file.
+func saveCacheToDisk() error {
+	if rateCache == nil {
+		return nil // Nothing to save
+	}
+
+	data, err := json.MarshalIndent(rateCache, "", "  ")
+	if err != nil {
+		return fmt.Errorf("error marshaling cache: %w", err)
+	}
+
+	err = os.WriteFile(cacheFilePath, data, 0644)
+	if err != nil {
+		return fmt.Errorf("error writing cache file: %w", err)
+	}
+
+	return nil
+}
 
 // fetchRates gets exchange rates, prioritizing the cache if the data is fresh.
+// Includes retry logic with exponential backoff.
 func fetchRates() (*CurrencyResponse, error) {
 	// We use the public USD base endpoint for stability in this learning project.
 	const apiURL = "https://v6.exchangerate-api.com/v6/c48eeafbbd058bf48a23fdb3/latest/USD"
@@ -46,26 +101,55 @@ func fetchRates() (*CurrencyResponse, error) {
 		}
 		fmt.Println("⚠️ Cache expired. Fetching new data from API...")
 	} else {
-		fmt.Println("Cache is empty. Fetching initial data from API...")
+		fmt.Println("💾 Cache is empty. Fetching initial data from API...")
 	}
 	// --- END CACHE CHECK ---
 
-	// --- 2. API CALL (Only runs if cache is invalid or empty) ---
-	resp, err := http.Get(apiURL)
-	if err != nil {
-		return nil, fmt.Errorf("error making HTTP request: %w", err)
-	}
+	// --- 2. API CALL WITH RETRY LOGIC (Only runs if cache is invalid or empty) ---
+	var resp *http.Response
+	var body []byte
+	var err error
+	maxRetries := 3
+	baseDelay := 1 * time.Second
 
-	// ALWAYS close the response body to prevent resource leaks.
-	defer resp.Body.Close()
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			delay := time.Duration(math.Pow(2, float64(attempt-1))) * baseDelay
+			fmt.Printf("🔄 Retry attempt %d/%d after %v...\n", attempt, maxRetries, delay)
+			time.Sleep(delay)
+		}
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected HTTP status code: %d", resp.StatusCode)
-	}
+		resp, err = http.Get(apiURL)
+		if err != nil {
+			if attempt == maxRetries {
+				return nil, fmt.Errorf("error making HTTP request after %d retries: %w", maxRetries, err)
+			}
+			fmt.Printf("⚠️ HTTP request failed: %v\n", err)
+			continue
+		}
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("error reading response body: %w", err)
+		// ALWAYS close the response body to prevent resource leaks.
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			if attempt == maxRetries {
+				return nil, fmt.Errorf("unexpected HTTP status code: %d", resp.StatusCode)
+			}
+			fmt.Printf("⚠️ Got status code %d\n", resp.StatusCode)
+			continue
+		}
+
+		// Success! Read the response body
+		body, err = io.ReadAll(resp.Body)
+		if err != nil {
+			if attempt == maxRetries {
+				return nil, fmt.Errorf("error reading response body: %w", err)
+			}
+			fmt.Printf("⚠️ Error reading response: %v\n", err)
+			continue
+		}
+
+		break // Success, exit retry loop
 	}
 
 	var rates CurrencyResponse
@@ -85,9 +169,46 @@ func fetchRates() (*CurrencyResponse, error) {
 		FetchedAt: time.Now(), // Record the time of the successful fetch
 	}
 	fmt.Println("✅ Successfully updated cache with new rates.")
+
+	// Save cache to disk for persistence
+	if err := saveCacheToDisk(); err != nil {
+		fmt.Printf("⚠️ Warning: Could not save cache to disk: %v\n", err)
+	}
 	// --- END CACHE UPDATE ---
 
 	return &rates, nil
+}
+
+// validateCurrency checks if a currency code is valid and suggests alternatives if not.
+func validateCurrency(code string, rates map[string]float64) error {
+	code = strings.ToUpper(code)
+	if _, exists := rates[code]; exists {
+		return nil
+	}
+
+	// Find similar currency codes
+	var suggestions []string
+	for validCode := range rates {
+		if strings.HasPrefix(validCode, code[:min(1, len(code))]) {
+			suggestions = append(suggestions, validCode)
+			if len(suggestions) >= 5 {
+				break
+			}
+		}
+	}
+
+	if len(suggestions) > 0 {
+		return fmt.Errorf("currency code '%s' not found. Did you mean: %s?", code, strings.Join(suggestions, ", "))
+	}
+	return fmt.Errorf("currency code '%s' not supported", code)
+}
+
+// min returns the minimum of two integers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // convertCurrency performs the conversion using USD as the base intermediary.
@@ -101,16 +222,16 @@ func convertCurrency(amount float64, from, to string, rates map[string]float64) 
 		return amount, nil
 	}
 
-	rateFrom, okFrom := rates[from]
-	rateTo, okTo := rates[to]
+	// Validate currencies with helpful error messages
+	if err := validateCurrency(from, rates); err != nil {
+		return 0, fmt.Errorf("source currency error: %w", err)
+	}
+	if err := validateCurrency(to, rates); err != nil {
+		return 0, fmt.Errorf("target currency error: %w", err)
+	}
 
-	// Check if the requested currencies are available in the fetched rates.
-	if !okFrom {
-		return 0, fmt.Errorf("source currency not supported: %s", from)
-	}
-	if !okTo {
-		return 0, fmt.Errorf("target currency not supported: %s", to)
-	}
+	rateFrom := rates[from]
+	rateTo := rates[to]
 
 	// Step 1: Convert the amount FROM the source currency TO the Base currency (USD).
 	// Since the rate is (1 USD = X Currency), we divide by the rate to get USD value.
@@ -123,9 +244,23 @@ func convertCurrency(amount float64, from, to string, rates map[string]float64) 
 }
 
 func main() {
+	// Parse command-line flags
+	cacheMinutes := flag.Int("cache", 30, "Cache expiry time in minutes")
+	batchMode := flag.Bool("batch", false, "Enable batch conversion mode (multiple conversions)")
+	flag.Parse()
+
+	// Set cache expiry from flag
+	cacheExpiry = time.Duration(*cacheMinutes) * time.Minute
+
 	fmt.Println("----------------------------------")
 	fmt.Println(" Command Line Currency Converter ")
 	fmt.Println("----------------------------------")
+	fmt.Printf("⚙️  Cache expiry: %v\n", cacheExpiry)
+
+	// Load cache from disk if available
+	if err := loadCacheFromDisk(); err != nil {
+		fmt.Printf("⚠️ Warning: Could not load cache from disk: %v\n", err)
+	}
 
 	// Get rates (will use API or cache)
 	ratesData, err := fetchRates()
@@ -134,18 +269,57 @@ func main() {
 		return
 	}
 
-	// --- USER INPUT ---
+	// Display the base currency used for conversion
+	fmt.Printf("\n💱 Conversion base currency used by API: %s\n", ratesData.BaseCode)
+
+	// Batch conversion mode
+	if *batchMode {
+		fmt.Println("\n🔄 Batch Mode Enabled - Enter conversions (or 'quit' to exit)")
+		for {
+			var amount float64
+			var fromCurrency, toCurrency string
+
+			fmt.Print("\nEnter amount (or 'quit'): ")
+			var input string
+			fmt.Scanln(&input)
+			if strings.ToLower(input) == "quit" {
+				break
+			}
+
+			_, err := fmt.Sscanf(input, "%f", &amount)
+			if err != nil {
+				fmt.Printf("❌ Invalid amount: %v\n", err)
+				continue
+			}
+
+			fmt.Print("Enter source currency code (e.g., EUR): ")
+			fmt.Scanln(&fromCurrency)
+
+			fmt.Print("Enter target currency code (e.g., INR): ")
+			fmt.Scanln(&toCurrency)
+
+			convertedAmount, err := convertCurrency(amount, fromCurrency, toCurrency, ratesData.ConversionRates)
+			if err != nil {
+				fmt.Printf("\n❌ Conversion Error: %v\n", err)
+				continue
+			}
+
+			fmt.Println("----------------------------------")
+			fmt.Printf("✅ %.2f %s = %.2f %s\n", amount, strings.ToUpper(fromCurrency), convertedAmount, strings.ToUpper(toCurrency))
+			fmt.Println("----------------------------------")
+		}
+		fmt.Println("\n👋 Goodbye!")
+		return
+	}
+
+	// --- SINGLE CONVERSION MODE ---
 	var amount float64
 	var fromCurrency, toCurrency string
 
-	// Display the base currency used for conversion
-	fmt.Printf("\nConversion base currency used by API: %s\n", ratesData.BaseCode)
-
 	// Get Amount
-	fmt.Print("Enter amount to be converted (e.g., 100.50): ")
-	// We handle the possibility of an error from Scanln, which is good practice.
+	fmt.Print("\nEnter amount to be converted (e.g., 100.50): ")
 	_, err = fmt.Scanln(&amount)
-	if err != nil && err.Error() != "unexpected newline" {
+	if err != nil {
 		fmt.Printf("Error reading amount: %v\n", err)
 		return
 	}
@@ -153,7 +327,7 @@ func main() {
 	// Get From Currency
 	fmt.Print("Enter source currency code (e.g., EUR): ")
 	_, err = fmt.Scanln(&fromCurrency)
-	if err != nil && err.Error() != "unexpected newline" {
+	if err != nil {
 		fmt.Printf("Error reading source currency: %v\n", err)
 		return
 	}
@@ -161,7 +335,7 @@ func main() {
 	// Get To Currency
 	fmt.Print("Enter target currency code (e.g., INR): ")
 	_, err = fmt.Scanln(&toCurrency)
-	if err != nil && err.Error() != "unexpected newline" {
+	if err != nil {
 		fmt.Printf("Error reading target currency: %v\n", err)
 		return
 	}
@@ -170,18 +344,14 @@ func main() {
 	convertedAmount, err := convertCurrency(amount, fromCurrency, toCurrency, ratesData.ConversionRates)
 
 	if err != nil {
-		fmt.Printf("\nConversion Error: %v\n", err)
+		fmt.Printf("\n❌ Conversion Error: %v\n", err)
 		return
 	}
 
 	// --- RESULT ---
 	fmt.Println("----------------------------------")
-	// Ensure result is formatted neatly
-	fmt.Printf("%.2f %s = %.2f %s\n", amount, strings.ToUpper(fromCurrency), convertedAmount, strings.ToUpper(toCurrency))
+	fmt.Printf("✅ %.2f %s = %.2f %s\n", amount, strings.ToUpper(fromCurrency), convertedAmount, strings.ToUpper(toCurrency))
 	fmt.Println("----------------------------------")
 
-	// Optional: Show the cache in action by trying to fetch again
-	fmt.Println("\n--- Demonstrating Cache Use (Immediate Second Fetch) ---")
-	// This second call proves the caching works because it will print the "Using rates from cache" message.
-	_, _ = fetchRates()
+	fmt.Println("\n💡 Tip: Use -batch flag for multiple conversions or -cache=60 to set cache expiry to 60 minutes")
 }
