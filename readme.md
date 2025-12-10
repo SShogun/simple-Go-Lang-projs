@@ -47,7 +47,48 @@ go run commandLineCurrencyConverter/commandLineCurrencyConverter.go -batch -cach
 
 ### 2. Password Strength Calculator
 
-*(Add description when implemented)*
+A command-line tool that analyzes password strength and provides detailed feedback on character composition.
+
+**Features:**
+- 🔐 Analyzes password character variety
+- 📊 Scores passwords from 0-5 based on criteria
+- ✅ Checks for uppercase, lowercase, digits, and special characters
+- 📋 Detailed feedback on each requirement
+- ⚙️ Configurable special character set
+- 💡 Simple interactive CLI
+
+**Usage:**
+
+```bash
+go run passwordStrengthCalculator/passwordStrengthCalculator.go
+```
+
+**Example:**
+
+```
+Enter a password to analyze: MyPassword123!
+The password has a length of greater than 8
+Has upper case character
+Has lower case character
+Has digit character
+Has special character
+Password strength score: 5 out of 5
+```
+
+**Scoring System:**
+- Length ≥ 8 characters: +1 point
+- Contains uppercase letter: +1 point
+- Contains lowercase letter: +1 point
+- Contains digit: +1 point
+- Contains special character: +1 point
+- **Maximum score: 5**
+
+**Technical Highlights:**
+- Unicode character detection (`unicode` package)
+- String iteration and rune handling
+- Character set validation
+- User input handling
+- Clear feedback messaging
 
 ---
 
@@ -78,8 +119,10 @@ go run commandLineCurrencyConverter.go
 - JSON data handling
 - Caching strategies
 - Error handling patterns
-- Command-line interfaces
+- Command-line interfaces and flags
 - File I/O operations
+- Unicode handling and character validation
+- String manipulation and analysis
 - Concurrency (future)
 
 ---
