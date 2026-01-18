@@ -1,40 +1,52 @@
 package main
 
 import (
+	"fmt"
 	"sync"
 )
 
 type RWData struct {
-	value map[string]string
 	mu    sync.RWMutex
+	value map[string]string
 }
 
-func Get(data *RWData, key string) string {
-	data.mu.RLock()
-	defer data.mu.RUnlock()
-	return data.value[key]
+// NewStore initializes the struct properly
+func NewStore() *RWData {
+	return &RWData{
+		value: make(map[string]string),
+	}
 }
 
-func Set(data *RWData, key, val string) {
-	data.mu.Lock()
-	defer data.mu.Unlock()
-	data.value[key] = val
+// Get uses a Read Lock (multiple readers allowed)
+func (d *RWData) Get(key string) string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.value[key]
+}
+
+// Set uses a Write Lock (exclusive access)
+func (d *RWData) Set(key, val string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.value[key] = val
 }
 
 func main() {
-	data := &RWData{
-		value: make(map[string]string),
-	}
+	store := NewStore()
 	var wg sync.WaitGroup
+
 	for i := 0; i < 100; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			key := "key" + string(i%10+'0')
-			Set(data, key, "value"+string(i+'0'))
-			_ = Get(data, key)
+			k := fmt.Sprintf("key-%d", i%10)
+			v := fmt.Sprintf("value-%d", i)
+
+			store.Set(k, v)
+			_ = store.Get(k)
 		}(i)
 	}
-	wg.Wait()
 
+	wg.Wait()
+	fmt.Println("Final value for key-0:", store.Get("key-0"))
 }
