@@ -36,7 +36,7 @@ func worker(id int, jobs <-chan Job, results chan<- Result, wg *sync.WaitGroup) 
 }
 
 // Helper function to handle File I/O safely
-func searchInFile(path string, keyword string) (int, error) {
+func searchInFile(path, keyword string) (int, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return 0, err
