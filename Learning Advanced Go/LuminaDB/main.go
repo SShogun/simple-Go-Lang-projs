@@ -144,23 +144,80 @@ func (db *LuminaDB) Recover() error {
 	return scanner.Err()
 }
 
+// CLI loop
+func startShell(db *LuminaDB) {
+	scanner := bufio.NewScanner(os.Stdin)
+	fmt.Println("\n--- LuminaDB Shell ---")
+	fmt.Println("Commands: SET <key> <val> | GET <key> | DEL <key> | EXIT")
+	fmt.Print("> ")
+
+	for scanner.Scan() {
+		input := scanner.Text()
+		parts := strings.Fields(input) // Splits by any whitespace
+
+		if len(parts) == 0 {
+			fmt.Print("> ")
+			continue
+		}
+
+		command := strings.ToUpper(parts[0])
+
+		switch command {
+		case "SET":
+			if len(parts) != 3 {
+				fmt.Println("Error: SET requires key and value")
+			} else {
+				db.Put(parts[1], parts[2])
+				fmt.Println("OK")
+			}
+
+		case "GET":
+			if len(parts) != 2 {
+				fmt.Println("Error: GET requires key")
+			} else {
+				val := db.Get(parts[1])
+				if val == "" {
+					fmt.Println("(nil)")
+				} else {
+					fmt.Println(val)
+				}
+			}
+
+		case "DEL":
+			if len(parts) != 2 {
+				fmt.Println("Error: DEL requires key")
+			} else {
+				db.Delete(parts[1])
+				fmt.Println("OK")
+			}
+
+		case "EXIT":
+			fmt.Println("Shutting down LuminaDB...")
+			return
+
+		default:
+			fmt.Printf("Unknown command: %s\n", command)
+		}
+
+		fmt.Print("> ")
+	}
+}
+
 func main() {
-	// 1. Initialize
-	db, _ := NewLuminaDB("lumina.log")
+	db, err := NewLuminaDB("lumina.log")
+	if err != nil {
+		fmt.Printf("Initialization failed: %v\n", err)
+		return
+	}
 	defer db.Close()
 
-	// 2. RECOVER: This is where the magic happens
-	fmt.Println("Recovering data from disk...")
+	fmt.Println("LuminaDB Engine Started.")
+	fmt.Print("Checking for recovery data... ")
 	if err := db.Recover(); err != nil {
-		fmt.Printf("Recovery failed: %v\n", err)
+		fmt.Printf("Error: %v\n", err)
+	} else {
+		fmt.Println("Done.")
 	}
 
-	// 3. Check if old data exists
-	val := db.Get("my_key")
-	if val != "" {
-		fmt.Printf("Found existing data: %s\n", val)
-	} else {
-		fmt.Println("No existing data. Creating new entry...")
-		db.Put("my_key", "Hello_From_The_Past")
-	}
+	startShell(db)
 }

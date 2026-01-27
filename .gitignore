@@ -24,3 +24,5 @@ currency_cache.json
 *.swo
 *~
 Learning Advanced Go/lumina.log
+Learning Advanced Go/LuminaDB/lumina.log
+Learning Advanced Go/LuminaDB/go.mod
