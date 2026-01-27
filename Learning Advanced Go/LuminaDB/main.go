@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 )
 
@@ -104,16 +106,61 @@ func (l *Logger) Close() error {
 	return l.file.Close()
 }
 
-func main() {
-	db, err := NewLuminaDB("lumina.llog")
+// Recovery function to be implemented
+func (db *LuminaDB) Recover() error {
+	file, err := os.Open("lumina.log")
 	if err != nil {
-		panic(err)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
 	}
+
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		parts := strings.Split(line, " ")
+
+		if len(parts) < 2 {
+			continue
+		}
+
+		command := parts[0]
+		key := parts[1]
+
+		switch command {
+		case "SET":
+			if len(parts) == 3 {
+				value := parts[2]
+
+				db.store.Set(key, value)
+			}
+		case "DEL":
+			db.store.Delete(key)
+		}
+	}
+	return scanner.Err()
+}
+
+func main() {
+	// 1. Initialize
+	db, _ := NewLuminaDB("lumina.log")
 	defer db.Close()
 
-	db.Put("session_1", "active")
-	db.Put("session_2", "idle")
-	fmt.Println("Session 1 Status:", db.Get("session_1"))
+	// 2. RECOVER: This is where the magic happens
+	fmt.Println("Recovering data from disk...")
+	if err := db.Recover(); err != nil {
+		fmt.Printf("Recovery failed: %v\n", err)
+	}
 
-	db.Delete("session_2")
+	// 3. Check if old data exists
+	val := db.Get("my_key")
+	if val != "" {
+		fmt.Printf("Found existing data: %s\n", val)
+	} else {
+		fmt.Println("No existing data. Creating new entry...")
+		db.Put("my_key", "Hello_From_The_Past")
+	}
 }
