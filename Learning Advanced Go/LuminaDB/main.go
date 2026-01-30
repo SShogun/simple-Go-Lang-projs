@@ -2,15 +2,21 @@ package main
 
 import (
 	"bufio"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 type Logger struct {
 	file *os.File
 	mu   sync.Mutex
+}
+
+func (l *Logger) LogSet(key string, value string) error {
+	panic("unimplemented")
 }
 
 // Memory Store
@@ -86,12 +92,52 @@ func NewLogger(filename string) (*Logger, error) {
 	return &Logger{file: f}, nil
 }
 
-func (l *Logger) LogSet(key, value string) error {
+// func (l *Logger) LogSet(key, value string) error {
+// 	l.mu.Lock()
+// 	defer l.mu.Unlock()
+
+//		_, err := l.file.WriteString("SET " + key + " " + value + "\n")
+//		return err
+//	}
+func (l *Logger) LogSetBinary(key, value string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	_, err := l.file.WriteString("SET " + key + " " + value + "\n")
+	// 1. Build the frame (Action 1 for SET)
+	timestamp := time.Now().Unix()
+	keyBytes := []byte(key)
+	valBytes := []byte(value)
+
+	// Frame: [Action:1][Time:8][KeyLen:4][ValLen:4][Key:?][Val:?]
+	size := 1 + 8 + 4 + 4 + len(keyBytes) + len(valBytes)
+	buf := make([]byte, size)
+
+	buf[0] = 1 // SET
+	binary.BigEndian.PutUint64(buf[1:9], uint64(timestamp))
+	binary.BigEndian.PutUint32(buf[9:13], uint32(len(keyBytes)))
+	binary.BigEndian.PutUint32(buf[13:17], uint32(len(valBytes)))
+	copy(buf[17:], keyBytes)
+	copy(buf[17+len(keyBytes):], valBytes)
+
+	// 2. Write the binary blob
+	_, err := l.file.Write(buf)
 	return err
+}
+func (l *Logger) EncodeFrame(action byte, timestamp int64, key, value string) ([]byte, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	keyLen := uint32(len(key))
+	valueLen := uint32(len(value))
+	size := 1 + 8 + 4 + 4 + len(key) + len(value)
+	data := make([]byte, size)
+
+	data[0] = action
+	binary.BigEndian.PutUint64(data[1:9], uint64(timestamp))
+	binary.BigEndian.PutUint32(data[9:13], keyLen)
+	binary.BigEndian.PutUint32(data[13:17], valueLen)
+	copy(data[17:17+len(key)], []byte(key))
+	copy(data[17+len(key):], []byte(value))
+	return data, nil
 }
 
 func (l *Logger) LogDelete(key string) error {
