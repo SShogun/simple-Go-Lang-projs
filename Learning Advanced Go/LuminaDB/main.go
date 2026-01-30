@@ -108,7 +108,7 @@ func (l *Logger) LogSetBinary(key, value string) error {
 	keyBytes := []byte(key)
 	valBytes := []byte(value)
 
-	// Frame: [Action:1][Time:8][KeyLen:4][ValLen:4][Key:?][Val:?]
+	// Frame:
 	size := 1 + 8 + 4 + 4 + len(keyBytes) + len(valBytes)
 	buf := make([]byte, size)
 
