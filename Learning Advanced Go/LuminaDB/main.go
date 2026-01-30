@@ -3,7 +3,9 @@ package main
 import (
 	"bufio"
 	"encoding/binary"
+	"flag"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 	"sync"
@@ -19,34 +21,10 @@ func (l *Logger) LogSet(key string, value string) error {
 	panic("unimplemented")
 }
 
-// Memory Store
-type RWData struct {
-	mu    sync.RWMutex
-	value map[string]string
-}
-
-func (d *RWData) Get(key string) string {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	return d.value[key]
-}
-
-func (d *RWData) Set(key, value string) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.value[key] = value
-}
-
 func (d *RWData) Delete(key string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	delete(d.value, key)
-}
-
-// Main Engine
-type LuminaDB struct {
-	store  *RWData
-	logger *Logger
 }
 
 func NewLuminaDB(logFile string) (*LuminaDB, error) {
@@ -250,20 +228,84 @@ func startShell(db *LuminaDB) {
 }
 
 func main() {
+	clientMode := flag.Bool("client", false, "run as client")
+	flag.Parse()
+
+	if *clientMode {
+		testClient()
+		return
+	}
+
+	// Create a new LuminaDB instance
 	db, err := NewLuminaDB("lumina.log")
 	if err != nil {
-		fmt.Printf("Initialization failed: %v\n", err)
+		fmt.Println("Error creating database:", err)
 		return
 	}
 	defer db.Close()
 
-	fmt.Println("LuminaDB Engine Started.")
-	fmt.Print("Checking for recovery data... ")
+	// Recover from log
 	if err := db.Recover(); err != nil {
-		fmt.Printf("Error: %v\n", err)
-	} else {
-		fmt.Println("Done.")
+		fmt.Println("Error recovering database:", err)
 	}
 
-	startShell(db)
+	// Start TCP server
+	listener, err := net.Listen("tcp", "localhost:8080")
+	if err != nil {
+		fmt.Println("Error starting server:", err)
+		return
+	}
+	defer listener.Close()
+
+	fmt.Println("LuminaDB server listening on localhost:8080")
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			fmt.Println("Error accepting connection:", err)
+			continue
+		}
+
+		go handleClient(conn, db)
+	}
+}
+
+func handle(conn net.Conn, db *LuminaDB) {
+	defer conn.Close()
+	parser := RespParser{reader: bufio.NewReader(conn)}
+	for {
+		args, err := parser.Parse()
+		if err != nil {
+			return
+		}
+
+		cmd := strings.ToUpper(args[0])
+		switch cmd {
+		case "SET":
+			db.logger.LogSet(args[1], args[2])
+			db.store.Set(args[1], args[2])
+			conn.Write([]byte("+OK\r\n"))
+		case "GET":
+			val := db.store.Get(args[1])
+			if val == "" {
+				conn.Write([]byte("$-1\r\n"))
+			} else {
+				conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(val), val)))
+			}
+		}
+	}
+}
+
+// (Supporting structs RWData and LuminaDB omitted for brevity but remain the same)
+type RWData struct {
+	mu    sync.RWMutex
+	value map[string]string
+}
+
+func (d *RWData) Get(k string) string { d.mu.RLock(); defer d.mu.RUnlock(); return d.value[k] }
+func (d *RWData) Set(k, v string)     { d.mu.Lock(); defer d.mu.Unlock(); d.value[k] = v }
+
+type LuminaDB struct {
+	store  *RWData
+	logger *Logger
 }
