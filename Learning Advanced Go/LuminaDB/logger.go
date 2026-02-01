@@ -76,7 +76,20 @@ func (l *Logger) LogDelete(key string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	_, err := l.file.WriteString("DEL " + key + "\n")
+	// Build binary frame for DELETE (action = 2, value is empty)
+	timestamp := time.Now().Unix()
+	keyBytes := []byte(key)
+
+	size := 1 + 8 + 4 + 4 + len(keyBytes) // No value for DEL
+	buf := make([]byte, size)
+
+	buf[0] = 2 // DEL
+	binary.BigEndian.PutUint64(buf[1:9], uint64(timestamp))
+	binary.BigEndian.PutUint32(buf[9:13], uint32(len(keyBytes)))
+	binary.BigEndian.PutUint32(buf[13:17], 0) // valLen = 0
+	copy(buf[17:], keyBytes)
+
+	_, err := l.file.Write(buf)
 	return err
 }
 
